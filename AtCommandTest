@@ -1,0 +1,154 @@
+package com.space.smadmin.factory.service.sms;
+
+import cn.hutool.core.io.IoUtil;
+import cn.hutool.core.util.ObjectUtil;
+import com.alibaba.fastjson.JSON;
+import com.space.smadmin.constant.MessageSendParamConstant;
+import com.space.smadmin.dao.MessageConfigRelSmsSignMapper;
+import com.space.smadmin.dto.MessageSendParamDTO;
+import com.space.smadmin.entity.dto.TemplateDTO;
+import com.space.smadmin.entity.po.MessageConfigRelSmsSignEntity;
+import com.space.smadmin.entity.po.SmsSendRecordEntity;
+import com.space.smadmin.enums.AliReceiptEnum;
+import com.space.smadmin.enums.MessageSendChannelEnum;
+import com.space.smadmin.enums.SmsTypeEnum;
+import com.space.smadmin.service.SmsSendRecordService;
+import com.space.smadmin.vo.MessageSendResultVO;
+import com.space.smcommon.config.RequestIdContext;
+import com.space.smcommon.enums.ResultEnum;
+import com.space.smcommon.exception.SpaceException;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.io.IOUtils;
+import org.apache.commons.lang3.StringUtils;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.stereotype.Service;
+
+import javax.annotation.Resource;
+import java.io.*;
+import java.net.Socket;
+import java.nio.charset.StandardCharsets;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+
+/**
+ * @author Mike
+ * @date 2024/7/20 11:49
+ * @description
+ */
+public class AtSmsCatService {
+
+    // 发送短信接口
+    private boolean send(String phone, String content) {
+        log.info("发送手机号：{},发送内容：{}", phone, content);
+        //  设置短信为TEXT格式
+        String setText = sendAtCommand(getSocket(), "AT+CMGF=1" + new String(new byte[]{0x0D}), false);
+        log.info("设置短信格式返回：{}", setText);
+        // 设置编码集合
+        String setUnicode = sendAtCommand(getSocket(), "AT+CSCS=\"UCS2\"" + new String(new byte[]{0x0D}), false);
+        log.info("设置编码集合返回：{}", setUnicode);
+        // 设置中文格式
+        String setModel = sendAtCommand(getSocket(), "AT+CSMP=17,71,0,8" + new String(new byte[]{0x0D}), false);
+        log.info("设置中文格式返回：{}", setModel);
+        // 设置发送手机号
+        String setPhone = sendAtCommand(getSocket(), "AT+CMGS=" + JSON.toJSONString(strToHexUnicode(phone)) + new String(new byte[]{0x0D}), true);
+        String result = sendAtCommand(getSocket(), strToHexUnicode(content) + new String(new byte[]{0x1A}), false);
+        log.info("发送消息返回：{}", result);
+        return StringUtils.isNotEmpty(result) && result.contains("OK");
+    }
+
+    /**
+     * 创建socket连接
+     */
+    private Socket getSocket() {
+        if (ObjectUtil.isEmpty(socket) || socket.isClosed()) {
+            synchronized (this) {
+                if (ObjectUtil.isEmpty(socket) || socket.isClosed()) {
+                    try {
+                        socket = new Socket(host, port);
+                        socket.setSoTimeout(60 * 1000);
+                    } catch (IOException e) {
+                        log.error("socket长连接创建失败", e);
+                        throw new SpaceException(ResultEnum.SOCKET_INIT_FAILED);
+                    }
+                }
+            }
+        }
+        if (!socket.isConnected()) {
+            throw new SpaceException(ResultEnum.SOCKET_CONNECT_FAILED);
+        }
+        return socket;
+    }
+
+
+    public static String sendAtCommand(Socket socket, String atcommand, boolean ignoreOk) {
+        String s = "";
+        PrintWriter out = null;
+        BufferedReader in = null;
+        try {
+            Thread.sleep(10);
+            OutputStreamWriter outWriter = new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.US_ASCII);
+            out = new PrintWriter(outWriter, true);
+            // 发送AT指令
+            out.println(atcommand);
+            in = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.US_ASCII));
+            s = read(in, ignoreOk);
+            Thread.sleep(10);
+            log.info("socket connect status {}", socket.isConnected());
+        } catch (Exception e) {
+            System.out.println("ERROR: send AT command failed; " + "Command: " + atcommand + "; Answer: " + s + "  " + e);
+        } finally {
+            IoUtil.close(out);
+            IoUtil.close(in);
+        }
+        return s;
+    }
+
+    public static String read(BufferedReader in, boolean ignoreOk) throws Exception {
+        int n, i;
+        char c;
+        StringBuilder answer = new StringBuilder();
+        for (i = 0; i < 50; i++) {
+            while (in.ready()) {
+                n = in.read();
+                if (n != -1) {
+                    c = (char) n;
+                    answer.append(c);
+                    TimeUnit.MILLISECONDS.sleep(1);
+                } else {
+                    break;
+                }
+            }
+            if (answer.indexOf("OK") != -1) {
+                break;
+            }
+            if (ignoreOk) {
+                Thread.sleep(50);
+                break;
+            }
+            Thread.sleep(20);
+        }
+        return answer.toString();
+    }
+
+    /**
+     * 手机号和短信内容转为Unicode编码
+     *
+     * @param str 加密字符串
+     * @return 加密结果
+     */
+    private static String strToHexUnicode(String str) {
+        StringBuilder unicodeStr = new StringBuilder();
+        for (char c : str.toCharArray()) {
+            char[] chars = Character.toChars(c);
+            for (char ch : chars) {
+                unicodeStr.append(String.format("%04x", (int) ch));
+            }
+        }
+        return unicodeStr.toString();
+    }
+}
