@@ -1,85 +1,92 @@
-package com.space.smadmin.factory.service.sms;
+package com.itkai.atcommand.sms;
 
 import cn.hutool.core.io.IoUtil;
-import cn.hutool.core.util.ObjectUtil;
 import com.alibaba.fastjson.JSON;
-import com.space.smadmin.constant.MessageSendParamConstant;
-import com.space.smadmin.dao.MessageConfigRelSmsSignMapper;
-import com.space.smadmin.dto.MessageSendParamDTO;
-import com.space.smadmin.entity.dto.TemplateDTO;
-import com.space.smadmin.entity.po.MessageConfigRelSmsSignEntity;
-import com.space.smadmin.entity.po.SmsSendRecordEntity;
-import com.space.smadmin.enums.AliReceiptEnum;
-import com.space.smadmin.enums.MessageSendChannelEnum;
-import com.space.smadmin.enums.SmsTypeEnum;
-import com.space.smadmin.service.SmsSendRecordService;
-import com.space.smadmin.vo.MessageSendResultVO;
-import com.space.smcommon.config.RequestIdContext;
-import com.space.smcommon.enums.ResultEnum;
-import com.space.smcommon.exception.SpaceException;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.commons.io.IOUtils;
+import org.apache.commons.lang3.ObjectUtils;
 import org.apache.commons.lang3.StringUtils;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.stereotype.Service;
 
-import javax.annotation.Resource;
 import java.io.*;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
-import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * @author Mike
- * @date 2024/7/20 11:49
- * @description
+ * @date 2024/7/27
  */
-public class AtSmsCatService {
+@Slf4j
+public class Demo {
 
-    // 发送短信接口
+    private static Socket socket = null;
+
+    /**
+     * 设备IP地址，本机需要与设备在同一个网段
+     * 如设备地址 172.116.15.200
+     * 则电脑本机ip需要为172.116.15.（0-255）不能是200端口
+     */
+    private static final String host = "192.168.1.100";
+
+    /**
+     * 设备设置的目标端口一般默认为2000
+     */
+    private static final int port = 2000;
+
+    /**
+     * <P>常见问题说明</P>
+     * 1. 设备的波特率需要正确，不然会导致串口工具乱码，我的是19200，如果有问题可以试试9600或者与厂家确认
+     * 2. new String(new byte[]{0x0D})指令结束命令最好是添加、不然服务器上可能会出现调试不同
+     * 3. 如果遇到发送短信失败可以测试SIM卡是否正常
+     * AT+CPIN?\r (测试SIM卡是否正常)
+     * AT+COPS?\r (如果返回0则代表SIM有问题，正常的话会返回+COPS: 0,0,"中国电信")
+     */
+
+    public static void main(String[] args) {
+        Demo demo = new Demo();
+        demo.send("15773153304","感谢支持、点赞哦！");
+    }
+
+
     private boolean send(String phone, String content) {
-        log.info("发送手机号：{},发送内容：{}", phone, content);
-        //  设置短信为TEXT格式
+        /**
+         * 设置短信格式，1代表英文短信
+         */
         String setText = sendAtCommand(getSocket(), "AT+CMGF=1" + new String(new byte[]{0x0D}), false);
         log.info("设置短信格式返回：{}", setText);
-        // 设置编码集合
+        // 设置编码集合，不然发送的消息会乱码
         String setUnicode = sendAtCommand(getSocket(), "AT+CSCS=\"UCS2\"" + new String(new byte[]{0x0D}), false);
         log.info("设置编码集合返回：{}", setUnicode);
-        // 设置中文格式
+        // 设置发送模式为英文17,71,0,8 中末位为8则代表中文，0则代表英文，这个一般不用修改照搬 17,71，0,8即可
         String setModel = sendAtCommand(getSocket(), "AT+CSMP=17,71,0,8" + new String(new byte[]{0x0D}), false);
         log.info("设置中文格式返回：{}", setModel);
-        // 设置发送手机号
+        // 设置发送手机号指令new String(new byte[]{0x0D})为\r的16进制形式，代表指令输入结束，window不加new String(new byte[]{0x0D})可以，但是服务器使用会认为指令没有发送完毕不会返回ok
+        // 短信内容同样需要进行Unicode编码，不然会出现中文乱码问题
         String setPhone = sendAtCommand(getSocket(), "AT+CMGS=" + JSON.toJSONString(strToHexUnicode(phone)) + new String(new byte[]{0x0D}), true);
+        // new String(new byte[]{0x1A}) 为1A的16进制模式,代表短信发送
         String result = sendAtCommand(getSocket(), strToHexUnicode(content) + new String(new byte[]{0x1A}), false);
         log.info("发送消息返回：{}", result);
         return StringUtils.isNotEmpty(result) && result.contains("OK");
     }
 
     /**
-     * 创建socket连接
+     * 创建socket连接,与设备进行通讯
+     * 如果socket建立失败可以在命令行输入cmd  ping一下设置的host 或者telnet host port
      */
     private Socket getSocket() {
-        if (ObjectUtil.isEmpty(socket) || socket.isClosed()) {
+        if (ObjectUtils.isEmpty(socket) || socket.isClosed()) {
             synchronized (this) {
-                if (ObjectUtil.isEmpty(socket) || socket.isClosed()) {
+                if (ObjectUtils.isEmpty(socket) || socket.isClosed()) {
                     try {
                         socket = new Socket(host, port);
                         socket.setSoTimeout(60 * 1000);
                     } catch (IOException e) {
                         log.error("socket长连接创建失败", e);
-                        throw new SpaceException(ResultEnum.SOCKET_INIT_FAILED);
                     }
                 }
             }
         }
         if (!socket.isConnected()) {
-            throw new SpaceException(ResultEnum.SOCKET_CONNECT_FAILED);
+            log.error("socket不是连接状态");
         }
         return socket;
     }
@@ -126,6 +133,7 @@ public class AtSmsCatService {
             if (answer.indexOf("OK") != -1) {
                 break;
             }
+            // 因为设置发送手机号不会返回ok,会阻塞进行下一条内容指令，不结束有可能会导致发送短信很慢，
             if (ignoreOk) {
                 Thread.sleep(50);
                 break;
@@ -136,8 +144,8 @@ public class AtSmsCatService {
     }
 
     /**
-     * 手机号和短信内容转为Unicode编码
-     *
+     * 短信设备无法识别中文并且根据我们设置的模式为UCS2所以手机号和短信内容需要转为Unicode编码
+     *（直接发送正常手机号会无法识别）
      * @param str 加密字符串
      * @return 加密结果
      */
@@ -151,4 +159,5 @@ public class AtSmsCatService {
         }
         return unicodeStr.toString();
     }
+
 }
